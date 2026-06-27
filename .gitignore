@@ -30,6 +30,7 @@ models/*.png
 data/*.csv
 data/*.parquet
 data/*.db
+data/physionet.org/
 
 # macOS
 .DS_Store
