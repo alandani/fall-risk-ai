@@ -20,6 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import shap
 import streamlit as st
+import streamlit.components.v1 as components
 from pathlib import Path
 
 from llm_advisor import FallRiskAdvisor, _risk_label, RISK_HIGH, RISK_MEDIUM
@@ -45,22 +46,18 @@ st.markdown("""
     letter-spacing: 0.05em;
     margin-bottom: 0.5rem;
 }
-/* Light mode badge colours */
 .badge-high     { background:#fee2e2; color:#991b1b; border:1.5px solid #f87171; }
 .badge-moderate { background:#fef3c7; color:#92400e; border:1.5px solid #fbbf24; }
 .badge-low      { background:#dcfce7; color:#166534; border:1.5px solid #4ade80; }
 
-/* Score gauge container */
-.gauge-label {
-    font-size: 2.4rem;
-    font-weight: 800;
-    margin: 0;
-}
+/* Score gauge */
+.gauge-label { font-size: 2.4rem; font-weight: 800; margin: 0; }
 
-/* LLM output boxes — inherit text colour so both themes work */
+/* LLM output boxes — use Streamlit's own CSS variables so they always
+   match the active theme (dark or light) automatically.              */
 .llm-box {
-    background: #f8fafc;
-    color: inherit;
+    background: var(--secondary-background-color);
+    color: var(--text-color);
     border-left: 4px solid #6366f1;
     border-radius: 6px;
     padding: 1rem 1.2rem;
@@ -69,25 +66,50 @@ st.markdown("""
     line-height: 1.6;
 }
 .rec-box {
-    background: #f0fdf4;
-    color: inherit;
+    background: var(--secondary-background-color);
+    color: var(--text-color);
     border-left: 4px solid #22c55e;
     border-radius: 6px;
     padding: 1rem 1.2rem;
     font-size: 0.95rem;
     line-height: 1.8;
 }
-
-/* Dark-mode overrides */
-@media (prefers-color-scheme: dark) {
-    .badge-high     { background:#4c1515; color:#fca5a5; border-color:#ef4444; }
-    .badge-moderate { background:#3d2600; color:#fcd34d; border-color:#f59e0b; }
-    .badge-low      { background:#052e16; color:#86efac; border-color:#22c55e; }
-    .llm-box { background:#1e1e2e; }
-    .rec-box { background:#0f2d1e; }
-}
 </style>
 """, unsafe_allow_html=True)
+
+_detected_theme = st.query_params.get("_theme", "light")
+
+# Runs in a real iframe so scripts execute — redirects only when theme changes.
+components.html("""
+<script>
+(function() {
+    try {
+        var root = window.parent.document.documentElement;
+        var bg = getComputedStyle(root).getPropertyValue('--background-color').trim();
+        var isDark = false;
+        if (bg.startsWith('#')) {
+            var hex = bg.slice(1);
+            var r = parseInt(hex.substr(0,2),16);
+            var g = parseInt(hex.substr(2,2),16);
+            var b = parseInt(hex.substr(4,2),16);
+            isDark = (0.299*r + 0.587*g + 0.114*b) < 128;
+        } else {
+            var m = bg.match(/\\d+/g);
+            if (m && m.length >= 3)
+                isDark = (0.299*+m[0] + 0.587*+m[1] + 0.114*+m[2]) < 128;
+        }
+        var url = new URL(window.parent.location.href);
+        var expected = isDark ? 'dark' : 'light';
+        if (url.searchParams.get('_theme') !== expected) {
+            url.searchParams.set('_theme', expected);
+            window.parent.location.replace(url.toString());
+        }
+    } catch(e) {}
+})();
+</script>
+""", height=0)
+
+dark_chart = _detected_theme == "dark"
 
 
 # ── Load advisor (cached — loads model once per session) ─────────────────────
@@ -109,17 +131,21 @@ def score_color(score: float) -> str:
     return "#22c55e"
 
 
-def shap_waterfall_fig(advisor: FallRiskAdvisor, patient: dict) -> plt.Figure:
+def shap_waterfall_fig(advisor: FallRiskAdvisor, patient: dict, dark: bool = True) -> plt.Figure:
     """Generate a SHAP waterfall figure for a single patient."""
     df = pd.DataFrame([patient])[advisor.all_features]
     X  = advisor.preprocessor.transform(df)
     # Named DataFrame so SHAP attaches real feature names
     sv = advisor.explainer(pd.DataFrame(X, columns=advisor.feature_names))
 
-    BG   = "#1e293b"   # dark slate card
-    TEXT = "#f1f5f9"   # near-white
+    if dark:
+        BG, TEXT, SPINE = "#1e293b", "#f1f5f9", "#475569"
+        mpl_style = "dark_background"
+    else:
+        BG, TEXT, SPINE = "#ffffff", "#0f172a", "#cbd5e1"
+        mpl_style = "default"
 
-    with plt.style.context("dark_background"):
+    with plt.style.context(mpl_style):
         shap.plots.waterfall(sv[0], max_display=12, show=False)
         fig = plt.gcf()
         fig.patch.set_facecolor(BG)
@@ -129,7 +155,7 @@ def shap_waterfall_fig(advisor: FallRiskAdvisor, patient: dict) -> plt.Figure:
             ax.xaxis.label.set_color(TEXT)
             ax.yaxis.label.set_color(TEXT)
             for spine in ax.spines.values():
-                spine.set_edgecolor("#475569")
+                spine.set_edgecolor(SPINE)
             for txt in ax.texts:
                 txt.set_color(TEXT)
         plt.tight_layout()
@@ -152,8 +178,8 @@ with st.sidebar:
     st.title("Patient Input")
     st.caption("Enter patient data to assess fall risk.")
 
-    # LM Studio model name
-    with st.expander("⚙️ LM Studio settings", expanded=False):
+    # LM Studio model name + appearance
+    with st.expander("⚙️ Settings", expanded=False):
         model_name = st.text_input(
             "Model ID", value="google/gemma-4-e4b",
             help="Paste the exact model ID from LM Studio (run curl http://localhost:1234/v1/models)"
@@ -289,7 +315,7 @@ with tab_shap:
                "Starting point is the model's average prediction.")
 
     with st.spinner("Computing SHAP values…"):
-        fig = shap_waterfall_fig(advisor, patient)
+        fig = shap_waterfall_fig(advisor, patient, dark=dark_chart)
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
